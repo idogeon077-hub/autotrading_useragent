@@ -14,15 +14,24 @@ class AgentSettings(BaseSettings):
     api_secret: str
     api_passphrase: str = ""      # OKX 전용
 
-    # Agent 인증
-    agent_token: str              # 앱에서 발급받은 토큰 (HMAC 서명 키 + Bearer 토큰)
-    agent_user_id: str            # 앱 프로필에서 확인한 UUID
+    # Agent 인증 (형식: {supabase_user_id}:{32바이트_hex})
+    agent_token: str              # 앱에서 발급받은 토큰
 
     # 중앙 서버 연결
     central_url: str              # e.g. https://central-server.railway.app
 
     # 서버 포트 (Railway 자동 제공)
     port: int = 8000
+
+    @property
+    def user_id(self) -> str:
+        """토큰에서 user_id 추출 ({user_id}:{token_secret} 형식)"""
+        return self.agent_token.split(":")[0]
+
+    @property
+    def token_secret(self) -> str:
+        """토큰에서 HMAC 서명 키 추출"""
+        return self.agent_token.split(":", 1)[1]
 
     model_config = SettingsConfigDict(
         env_file=".env",

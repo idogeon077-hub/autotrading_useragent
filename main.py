@@ -63,7 +63,7 @@ def verify_hmac_signature(payload: dict) -> bool:
         return False
     canonical = json.dumps(payload, sort_keys=True)
     expected = hmac.new(
-        settings.agent_token.encode(),
+        settings.token_secret.encode(),
         canonical.encode(),
         hashlib.sha256
     ).hexdigest()
@@ -110,7 +110,6 @@ async def register_with_central(agent_url: str):
             resp = await client.post(
                 f"{settings.central_url}/api/agent/register",
                 json={
-                    "user_id": settings.agent_user_id,
                     "agent_url": agent_url,
                     "agent_token": settings.agent_token,
                 }
@@ -136,7 +135,7 @@ async def lifespan(app: FastAPI):
     else:
         logger.warning("RAILWAY_PUBLIC_DOMAIN not set - skipping registration (local mode)")
 
-    logger.info(f"Agent started: exchange={settings.exchange}, user={settings.agent_user_id[:8]}...")
+    logger.info(f"Agent started: exchange={settings.exchange}, user={settings.user_id[:8]}...")
     yield
     logger.info("Agent shutting down")
 
@@ -330,7 +329,7 @@ async def health_check(authorization: str = Header(None)):
         return {
             "status": "healthy",
             "exchange": settings.exchange,
-            "user_id": settings.agent_user_id,
+            "user_id": settings.user_id,
             "balance_usdt": float(balance) if balance is not None else None,
         }
     except Exception as e:
