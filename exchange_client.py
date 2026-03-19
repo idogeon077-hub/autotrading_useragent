@@ -298,6 +298,20 @@ class AgentExchangeClient:
             await self._ensure_markets()
             rounded_sl = self.round_price(symbol, stop_loss_price)
             if self.exchange_id == "bybit":
+                position = await self.get_position(symbol)
+                if not position:
+                    logger.warning(f"No position found to set SL for {symbol}")
+                    return False
+                if position.side == "SHORT" and rounded_sl <= position.entry_price:
+                    raise ExchangeError(
+                        f"set_stop_loss failed for {symbol}: SHORT 포지션의 SL({rounded_sl})은 "
+                        f"진입가({position.entry_price})보다 높아야 합니다"
+                    )
+                if position.side == "LONG" and rounded_sl >= position.entry_price:
+                    raise ExchangeError(
+                        f"set_stop_loss failed for {symbol}: LONG 포지션의 SL({rounded_sl})은 "
+                        f"진입가({position.entry_price})보다 낮아야 합니다"
+                    )
                 await self.exchange.private_post_v5_position_trading_stop({
                     "category": "linear",
                     "symbol": symbol,
