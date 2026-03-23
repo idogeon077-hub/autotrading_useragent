@@ -286,8 +286,7 @@ class AgentExchangeClient:
             rounded_price = self.round_price(symbol, price)
             ccxt_symbol = self._to_ccxt_symbol(symbol)
             order = await self.exchange.create_order(
-                ccxt_symbol, "limit", side.lower(), float(rounded_qty), float(rounded_price),
-                {"hedged": False}
+                ccxt_symbol, "limit", side.lower(), float(rounded_qty), float(rounded_price)
             )
             order_id = order["id"]
             logger.info(f"Limit order placed: {side} {rounded_qty} {symbol} @ {rounded_price} (ID: {order_id})")
@@ -302,25 +301,11 @@ class AgentExchangeClient:
             rounded_qty = self.round_quantity(symbol, qty)
             rounded_price = self.round_price(symbol, price)
             ccxt_symbol = self._to_ccxt_symbol(symbol)
-            if self.exchange_id == "bitget":
-                result = await self.exchange.private_mix_post_v2_mix_order_place_order({
-                    "symbol": symbol,
-                    "productType": "USDT-FUTURES",
-                    "marginMode": "crossed",
-                    "marginCoin": "USDT",
-                    "side": side.lower(),
-                    "orderType": "limit",
-                    "price": str(rounded_price),
-                    "size": str(rounded_qty),
-                    "force": "GTC",
-                })
-                order_id = result["data"]["orderId"]
-            else:
-                order = await self.exchange.create_order(
-                    ccxt_symbol, "limit", side.lower(), float(rounded_qty), float(rounded_price),
-                    {"reduceOnly": True, "timeInForce": "GTC"}
-                )
-                order_id = order["id"]
+            order = await self.exchange.create_order(
+                ccxt_symbol, "limit", side.lower(), float(rounded_qty), float(rounded_price),
+                {"reduceOnly": True, "timeInForce": "GTC"}
+            )
+            order_id = order["id"]
             logger.info(f"TP order placed: {side} {rounded_qty} {symbol} @ {rounded_price} (ID: {order_id})")
             return order_id
         except Exception as e:
@@ -354,23 +339,16 @@ class AgentExchangeClient:
                     "positionIdx": 0,
                 })
             elif self.exchange_id == "bitget":
+                ccxt_symbol = self._to_ccxt_symbol(symbol)
                 position = await self.get_position(symbol)
                 if not position:
                     logger.warning(f"No position found to set SL for {symbol}")
                     return False
-                hold_side = "long" if position.side == "LONG" else "short"
-                await self.exchange.private_mix_post_v2_mix_order_place_tpsl_order({
-                    "symbol": symbol,
-                    "productType": "USDT-FUTURES",
-                    "marginMode": "crossed",
-                    "marginCoin": "USDT",
-                    "planType": "pos_loss",
-                    "triggerPrice": str(rounded_sl),
-                    "triggerType": "fill_price",
-                    "size": str(position.qty),
-                    "holdSide": hold_side,
-                    "delegateType": "market",
-                })
+                close_side = "sell" if position.side == "LONG" else "buy"
+                await self.exchange.create_order(
+                    ccxt_symbol, "stop_market", close_side, float(position.qty), None,
+                    {"stopPrice": float(rounded_sl), "reduceOnly": True}
+                )
             else:
                 ccxt_symbol = self._to_ccxt_symbol(symbol)
                 position = await self.get_position(symbol)
