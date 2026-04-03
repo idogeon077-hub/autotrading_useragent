@@ -112,7 +112,7 @@ async def register_with_central(agent_url: str):
     """중앙 서버에 Agent URL 등록"""
     await asyncio.sleep(3)  # 서버가 요청을 받을 수 있을 때까지 대기
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(verify=True, timeout=10.0) as client:
             resp = await client.post(
                 f"{settings.central_url_normalized}/api/agent/register",
                 json={
@@ -123,11 +123,11 @@ async def register_with_central(agent_url: str):
                 }
             )
             if resp.status_code == 200:
-                logger.info(f"Successfully registered with central server: {agent_url}")
+                logger.info("Successfully registered with central server")
             else:
-                logger.warning(f"Registration failed: HTTP {resp.status_code} - {resp.text}")
+                logger.warning(f"Registration failed: HTTP {resp.status_code}")
     except Exception as e:
-        logger.error(f"Failed to register with central server: {e}")
+        logger.error("Failed to register with central server")
 
 
 # ===== 수동 포지션 감지 =====
@@ -142,18 +142,18 @@ async def _post_to_central(path: str, payload: dict):
     if not settings.central_url:
         return
     try:
-        async with httpx.AsyncClient(timeout=10.0) as http:
+        async with httpx.AsyncClient(verify=True, timeout=10.0) as http:
             resp = await http.post(
                 f"{settings.central_url_normalized}{path}",
                 json=payload,
                 headers={"Authorization": f"Bearer {settings.agent_token}"},
             )
             if resp.status_code == 200:
-                logger.info(f"[ManualDetect] {path} 콜백 성공")
+                logger.info(f"[ManualDetect] 콜백 성공: {path}")
             else:
-                logger.warning(f"[ManualDetect] {path} 콜백 실패: {resp.status_code} {resp.text}")
+                logger.warning(f"[ManualDetect] 콜백 실패: HTTP {resp.status_code}")
     except Exception as e:
-        logger.error(f"[ManualDetect] {path} 콜백 오류: {repr(e)}")
+        logger.error("[ManualDetect] 콜백 오류 발생")
 
 
 async def _notify_manual_position(symbol: str, pos: dict, is_addon: bool):
@@ -311,8 +311,8 @@ async def _notify_tp_filled(symbol: str, pos: dict, prev_qty: float, curr_qty: f
         if fills:
             best_fill = min(fills, key=lambda f: abs(float(f.get("execQty", 0)) - qty_closed))
             actual_exit_price = best_fill.get("execPrice")
-    except Exception as e:
-        logger.warning(f"[TpFilled] fills 조회 실패: {repr(e)}")
+    except Exception:
+        logger.warning("[TpFilled] fills 조회 실패")
 
     payload = {
         "symbol": symbol,
@@ -364,10 +364,7 @@ async def detect_manual_positions():
                     prev_side = (known.get("side") or "").lower()
                     curr_side = (pos.get("side") or "").lower()
                     if prev_side and curr_side and prev_side != curr_side:
-                        logger.info(
-                            f"[ManualDetect] 방향 전환 감지: {symbol} "
-                            f"{prev_side.upper()} → {curr_side.upper()}"
-                        )
+                        logger.info(f"[ManualDetect] 방향 전환 감지: {symbol}")
                         await _notify_direction_switch(symbol, known, pos)
                         _known_positions[symbol] = pos
                         continue
@@ -380,17 +377,11 @@ async def detect_manual_positions():
                             _bot_executed_symbols.discard(symbol)
                             logger.info(f"[ManualDetect] 봇 추가매수 감지 스킵: {symbol}")
                         else:
-                            logger.info(
-                                f"[ManualDetect] 수동 추가매수 감지: {symbol} "
-                                f"qty {prev_qty} → {curr_qty}"
-                            )
+                            logger.info(f"[ManualDetect] 수동 추가매수 감지: {symbol}")
                             await _notify_manual_position(symbol, pos, is_addon=True)
                     elif curr_qty < prev_qty - 1e-9:
                         # qty 감소 + 포지션 존재 → TP 부분 체결
-                        logger.info(
-                            f"[ManualDetect] TP 부분 체결 감지: {symbol} "
-                            f"qty {prev_qty} → {curr_qty}"
-                        )
+                        logger.info(f"[ManualDetect] TP 부분 체결 감지: {symbol}")
                         await _notify_tp_filled(symbol, pos, prev_qty, curr_qty)
 
                     # MAE/MFE heartbeat (보유 중 포지션마다 30초마다 전송)
@@ -416,20 +407,14 @@ async def detect_manual_positions():
                                 # TP limit order: orderType="Limit", stopOrderType 없음
                                 # SL market order: orderType="Market" 또는 stopOrderType 있음
                                 is_tp_fill = (order_type == "Limit" and not stop_order_type)
-                        except Exception as e:
-                            logger.warning(f"[ManualDetect] fills 조회 실패, tp_filled 스킵: {e}")
+                        except Exception:
+                            logger.warning("[ManualDetect] fills 조회 실패, tp_filled 스킵")
 
                         if is_tp_fill:
-                            logger.info(
-                                f"[ManualDetect] 포지션 소멸 (마지막 TP 체결): {symbol} "
-                                f"qty {prev_qty} → 0"
-                            )
+                            logger.info(f"[ManualDetect] 포지션 소멸 (마지막 TP 체결): {symbol}")
                             await _notify_tp_filled(symbol, known, prev_qty, 0.0)
                         else:
-                            logger.info(
-                                f"[ManualDetect] 포지션 소멸 (SL/수동 청산): {symbol} "
-                                f"qty {prev_qty} → 0"
-                            )
+                            logger.info(f"[ManualDetect] 포지션 소멸 (SL/수동 청산): {symbol}")
 
                     logger.info(f"[ManualDetect] 포지션 청산 감지: {symbol}")
                     await _notify_position_closed(symbol)
@@ -443,6 +428,10 @@ async def detect_manual_positions():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # CENTRAL_URL HTTPS 강제 검증
+    if settings.central_url and not settings.central_url.startswith("https://"):
+        raise RuntimeError(f"CENTRAL_URL must use HTTPS (got: {settings.central_url[:10]}...)")
+
     # Railway는 RAILWAY_PUBLIC_DOMAIN을 자동 제공
     railway_domain = os.environ.get("RAILWAY_PUBLIC_DOMAIN", "")
     if railway_domain:
@@ -456,7 +445,7 @@ async def lifespan(app: FastAPI):
         )
 
     asyncio.create_task(detect_manual_positions())
-    logger.info(f"Agent started: exchange={settings.exchange}, user={settings.user_id[:8]}...")
+    logger.info(f"Agent started: exchange={settings.exchange}")
     yield
     logger.info("Agent shutting down")
 
@@ -569,10 +558,7 @@ async def execute_order(request: ExecuteRequest):
                         dca_order_ids.append(dca_id)
 
             _bot_executed_symbols.add(symbol)
-            logger.info(
-                f"market_entry completed: {symbol} {request.side} {request.qty} "
-                f"(market={order_id}, tp={len(tp_order_ids)}, dca={len(dca_order_ids)})"
-            )
+            logger.info(f"market_entry completed: {symbol}")
             return {
                 "success": True,
                 "order_id": order_id,
@@ -661,10 +647,7 @@ async def execute_order(request: ExecuteRequest):
                     if dca_id:
                         dca_order_ids.append(dca_id)
 
-            logger.info(
-                f"adjust completed: {symbol} sl={request.sl_price} "
-                f"(tp={len(tp_order_ids)}, dca={len(dca_order_ids)}, position_qty={position_qty})"
-            )
+            logger.info(f"adjust completed: {symbol}")
             return {
                 "success": True,
                 "position_qty": str(position_qty),
@@ -707,7 +690,6 @@ async def health_check(authorization: str = Header(None)):
         return {
             "status": "healthy",
             "exchange": settings.exchange,
-            "user_id": settings.user_id,
             "balance_usdt": float(balance) if balance is not None else None,
         }
     except Exception as e:

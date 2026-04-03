@@ -90,6 +90,23 @@ class AgentExchangeClient:
             config["password"] = self._api_passphrase
         return exchange_class(config)
 
+    def _log_known_exchange_error(self, e: Exception) -> bool:
+        """알려진 거래소 오류 코드를 감지해 사용자 친화적 메시지 로깅. 알려진 오류면 True 반환."""
+        err_str = str(e)
+        if "40014" in err_str:
+            logger.error(
+                "[설정 필요] API 키 권한 오류 (40014): 거래소 웹사이트에서 "
+                "선물 거래 권한이 포함된 API 키를 새로 발급하고 에이전트에 등록해 주세요."
+            )
+            return True
+        if "43011" in err_str:
+            logger.error(
+                "[설정 필요] 포지션 모드 오류 (43011): 현재 Hedge(양방향) 모드로 설정되어 있습니다. "
+                "거래소 설정에서 One-Way(단방향) 모드로 변경 후 다시 시도해 주세요."
+            )
+            return True
+        return False
+
     async def _ensure_markets(self):
         if not self._markets_loaded:
             await self.exchange.load_markets()
@@ -171,6 +188,7 @@ class AgentExchangeClient:
             free = usdt.get("free", 0) or 0
             return Decimal(str(free))
         except Exception as e:
+            self._log_known_exchange_error(e)
             logger.error(f"Failed to get balance: {e}")
             return None
 
@@ -191,7 +209,8 @@ class AgentExchangeClient:
                 return str(resp["data"]["uid"])
             return None
         except Exception as e:
-            logger.error(f"get_account_uid failed [{self.exchange_id}]: {e}")
+            self._log_known_exchange_error(e)
+            logger.error(f"get_account_uid failed [{self.exchange_id}]")
             return None
 
     # ===== 현재가 조회 =====
@@ -260,6 +279,7 @@ class AgentExchangeClient:
         except Exception as e:
             if "not modified" in str(e).lower() or "already" in str(e).lower():
                 return True
+            self._log_known_exchange_error(e)
             logger.error(f"Failed to switch to one-way mode: {e}")
             return False
 
@@ -291,6 +311,7 @@ class AgentExchangeClient:
             logger.info(f"Market order placed: {side} {rounded_qty} {symbol} (ID: {order_id})")
             return order_id
         except Exception as e:
+            self._log_known_exchange_error(e)
             logger.error(f"Failed to place market order: {e}")
             raise ExchangeError(f"place_market_order failed for {symbol}: {e}")
 
