@@ -47,6 +47,7 @@ _exchange_client: Optional[AgentExchangeClient] = None
 _known_positions: Dict[str, Optional[dict]] = {}   # symbol → position dict (None = no position)
 _bot_executed_symbols: set = set()                  # 봇이 market_entry 실행한 심볼 (수동 오감지 방지)
 _trailing_stop_active: set = set()                  # trailing stop이 활성화된 심볼 집합
+_known_sl_prices: Dict[str, str] = {}              # symbol → SL 가격 문자열 (MANUAL_CLOSE 오분류 방지)
 
 
 def get_exchange_client() -> AgentExchangeClient:
@@ -246,6 +247,17 @@ async def _notify_position_closed(symbol: str, exit_reason_override: Optional[st
                     f.get("orderType") == "Limit" and not f.get("stopOrderType")
                     for f in recent_fills
                 )
+                # Bitget plan order SL 체결은 stopOrderType이 없을 수 있음
+                # → exit_price와 known SL 가격 비교로 보완 판정
+                if not any_sl and symbol in _known_sl_prices:
+                    known_sl = float(_known_sl_prices[symbol])
+                    exit_price_val = float(payload.get("exit_price", 0) or 0)
+                    if exit_price_val > 0 and abs(exit_price_val - known_sl) / known_sl < 0.005:
+                        any_sl = True
+                        logger.info(
+                            f"[ManualDetect] SL_HIT 판정 (price match): "
+                            f"exit={exit_price_val} ≈ sl={known_sl} ({symbol})"
+                        )
                 # exit_reason_override가 있으면 fills 판정 결과로 덮어쓰지 않음
                 if "exit_reason" not in payload:
                     if any_sl:
@@ -279,6 +291,16 @@ async def _notify_position_closed(symbol: str, exit_reason_override: Optional[st
                         f.get("orderType") == "Limit" and not f.get("stopOrderType")
                         for f in recent
                     )
+                    # Bitget plan order SL 체결 보완 판정 (fills fallback 경로)
+                    if not any_sl and symbol in _known_sl_prices:
+                        known_sl = float(_known_sl_prices[symbol])
+                        exit_price_val = float(payload.get("exit_price", 0) or 0)
+                        if exit_price_val > 0 and abs(exit_price_val - known_sl) / known_sl < 0.005:
+                            any_sl = True
+                            logger.info(
+                                f"[ManualDetect] SL_HIT 판정 (price match, fallback): "
+                                f"exit={exit_price_val} ≈ sl={known_sl} ({symbol})"
+                            )
                     if any_sl:
                         payload["exit_reason"] = "SL_HIT"
                     elif not any_tp_limit:
@@ -364,7 +386,7 @@ async def _notify_tp_filled(symbol: str, pos: dict, prev_qty: float, curr_qty: f
 
 async def detect_manual_positions():
     """30초마다 포지션 폴링 — 수동 진입/추가매수/청산 감지 + MAE/MFE heartbeat"""
-    global _known_positions, _bot_executed_symbols, _trailing_stop_active
+    global _known_positions, _bot_executed_symbols, _trailing_stop_active, _known_sl_prices
     await asyncio.sleep(15)  # 시작 직후 1회 초기화
     client = get_exchange_client()
 
@@ -484,6 +506,7 @@ async def detect_manual_positions():
                     logger.info(f"[ManualDetect] 포지션 청산 감지: {symbol}")
                     await _notify_position_closed(symbol, exit_reason_override=detected_exit_reason)
                     del _known_positions[symbol]
+                    _known_sl_prices.pop(symbol, None)
 
         except Exception as e:
             logger.error(f"[ManualDetect] 폴링 오류: {e}")
@@ -620,6 +643,7 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
             # SL 설정
             if request.sl_price:
                 await client.set_stop_loss(symbol, Decimal(str(request.sl_price)))
+                _known_sl_prices[symbol] = str(request.sl_price)
 
             # TP 주문들
             tp_order_ids = []
@@ -675,6 +699,7 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
             # 미체결 주문 취소 (trailing stop 포함)
             await client.cancel_all_orders(symbol)
             _trailing_stop_active.discard(symbol)
+            _known_sl_prices.pop(symbol, None)
 
             # 포지션 청산
             position = await client.get_position(symbol)
@@ -690,6 +715,8 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
             if request.sl_price is None:
                 raise HTTPException(status_code=400, detail="sl_price required")
             success = await client.set_stop_loss(symbol, Decimal(str(request.sl_price)))
+            if success:
+                _known_sl_prices[symbol] = str(request.sl_price)
             return {"success": success}
 
         elif request.order_type == "cancel_order":
@@ -701,6 +728,7 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
         elif request.order_type == "cancel_all":
             success = await client.cancel_all_orders(symbol)
             _trailing_stop_active.discard(symbol)
+            _known_sl_prices.pop(symbol, None)
             return {"success": success}
 
         elif request.order_type == "adjust":
@@ -728,8 +756,15 @@ async def execute_order(request: Request, execute_req: ExecuteRequest):
                         "position_qty": str(position_qty),
                     }
                 _trailing_stop_active.add(symbol)  # 성공 시 추적 등록
+                _known_sl_prices.pop(symbol, None)  # trailing stop 전환 시 고정 SL 가격 제거
             elif request.sl_price:
                 sl_set = await client.set_stop_loss(symbol, Decimal(str(request.sl_price)))
+                if sl_set:
+                    _known_sl_prices[symbol] = str(request.sl_price)
+                else:
+                    # set_stop_loss False = 포지션이 이미 소멸 (SL/수동 청산 race condition)
+                    logger.info(f"[adjust] position already gone (SL not set), skipping TP/DCA: {symbol}")
+                    return {"success": True, "position_qty": "0", "sl_set": False, "tp_order_ids": [], "dca_order_ids": []}
 
             tp_order_ids = []
             if request.tp_orders:

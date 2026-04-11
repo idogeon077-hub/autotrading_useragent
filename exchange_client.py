@@ -366,6 +366,10 @@ class AgentExchangeClient:
                 logger.info(f"TP order placed: {side} {rounded_qty} {symbol} @ {rounded_price} (ID: {order_id})")
                 return order_id
         except Exception as e:
+            err_str = str(e)
+            if "43023" in err_str:
+                logger.warning(f"No position available for TP order (position already closed): {symbol}")
+                return None
             logger.error(f"Failed to place TP order: {e}")
             raise ExchangeError(f"place_tp_order failed for {symbol}: {e}")
 
